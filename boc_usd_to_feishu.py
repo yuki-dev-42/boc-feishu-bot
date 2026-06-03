@@ -5,17 +5,19 @@
 - 数据源：https://www.boc.cn/sourcedb/whpj/
 - 字段：现汇买入价（每 100 美元兑人民币）
 - 推送：飞书自定义机器人（interactive 卡片）
+- 记录：持久化上次价格 + 当周累计记录，便于卡片展示「较上次」和「本周累计」
 """
 import os
 import re
 import sys
 import time
 import hmac
+import json
 import base64
 import hashlib
 import logging
-from datetime import datetime
-from typing import Optional, Dict
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, List, Any
 import requests
 
 # ============== 配置（建议用环境变量注入，不要硬编码） ==============
@@ -46,10 +48,31 @@ logging.basicConfig(
 )
 log = logging.getLogger("boc-feishu")
 
-# 飞书消息中历史价格（用于显示涨跌）
-_last_price_file = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), ".last_price"
-)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 飞书消息中历史价格（用于显示较上次）
+_last_price_file = os.path.join(BASE_DIR, ".last_price")
+
+# 当周累计历史（用于显示本周累计）
+_weekly_history_file = os.path.join(BASE_DIR, ".weekly_rates.json")
+
+# 北京时间
+BJ_TZ = timezone(timedelta(hours=8))
+
+
+# ============== 时间工具 ==============
+def now_beijing() -> datetime:
+    return datetime.now(BJ_TZ)
+
+
+def format_bj_time(dt: Optional[datetime] = None) -> str:
+    return (dt or now_beijing()).strftime("%Y-%m-%d %H:%M")
+
+
+def week_key(dt: Optional[datetime] = None) -> str:
+    """ISO 周编号，例如 2026-W23。以北京时间计算。"""
+    iso = (dt or now_beijing()).isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
 
 
 # ============== 抓取 ==============
@@ -68,7 +91,7 @@ def fetch_boc_html(url: str = BOC_URL, retries: int = 3, timeout: int = 15) -> s
                 timeout=timeout,
             )
             r.raise_for_status()
-            # 显式按 UTF-8 解码，规避中行偶尔的 GBK 行为
+            # 中行页面通常可按 UTF-8 解码；若异常，requests 会尽量兜底。
             r.encoding = "utf-8"
             if "美元" not in r.text or "现汇买入价" not in r.text:
                 raise ValueError("返回内容异常，未识别到目标字段")
@@ -97,6 +120,95 @@ def parse_currency_row(html: str, currency: str = "美元") -> Dict[str, str]:
     return dict(zip(labels, cells))
 
 
+# ============== 历史记录 ==============
+def read_last_price() -> Optional[float]:
+    try:
+        with open(_last_price_file, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+        return float(raw) if raw else None
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def write_last_price(price: float) -> None:
+    with open(_last_price_file, "w", encoding="utf-8") as f:
+        f.write(f"{price:.4f}")
+
+
+def read_weekly_history() -> Dict[str, Any]:
+    try:
+        with open(_weekly_history_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def write_weekly_history(history: Dict[str, Any]) -> None:
+    with open(_weekly_history_file, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+
+def update_weekly_history(currency: str, price: float, data: Dict[str, str]) -> List[Dict[str, Any]]:
+    """
+    记录当周每次推送。
+    结构：
+    {
+      "美元": {
+        "2026-W23": [
+          {"ts": "...", "price": 675.6, "publish_date": "...", "publish_time": "..."}
+        ]
+      }
+    }
+    """
+    history = read_weekly_history()
+    wk = week_key()
+    currency_history = history.setdefault(currency, {})
+
+    # 只保留最近 12 周，避免文件无限增大
+    for old_key in list(currency_history.keys()):
+        if old_key != wk and len(currency_history) > 12:
+            currency_history.pop(old_key, None)
+
+    records = currency_history.setdefault(wk, [])
+    records.append(
+        {
+            "ts": format_bj_time(),
+            "price": round(price, 4),
+            "publish_date": data.get("发布日期", ""),
+            "publish_time": data.get("发布时间", ""),
+        }
+    )
+    write_weekly_history(history)
+    return records
+
+
+def build_weekly_summary(records: List[Dict[str, Any]]) -> str:
+    if not records:
+        return "暂无本周记录"
+
+    prices = [float(r["price"]) for r in records if "price" in r]
+    if not prices:
+        return "暂无本周记录"
+
+    first = prices[0]
+    latest = prices[-1]
+    high = max(prices)
+    low = min(prices)
+    avg = sum(prices) / len(prices)
+    diff = latest - first
+    diff_text = "持平" if abs(diff) < 1e-9 else f"{'上涨' if diff > 0 else '下跌'} {abs(diff):.2f}"
+
+    return (
+        f"**本周累计**：已记录 **{len(prices)}** 次\n"
+        f"**本周首条**：{first:.2f}\n"
+        f"**本周最新**：{latest:.2f}\n"
+        f"**本周累计变动**：{diff_text}\n"
+        f"**本周最高/最低**：{high:.2f} / {low:.2f}\n"
+        f"**本周均值**：{avg:.2f}"
+    )
+
+
 # ============== 飞书推送 ==============
 def gen_sign(secret: str, ts: int) -> str:
     string_to_sign = f"{ts}\n{secret}"
@@ -104,11 +216,16 @@ def gen_sign(secret: str, ts: int) -> str:
     return base64.b64encode(h).decode("utf-8")
 
 
-def build_card(currency: str, data: Dict[str, str], prev_price: Optional[float]) -> dict:
+def build_card(
+    currency: str,
+    data: Dict[str, str],
+    prev_price: Optional[float],
+    weekly_records: List[Dict[str, Any]],
+) -> dict:
     """构造飞书交互卡片。"""
     price_str = data["现汇买入价"]
     price = float(price_str)
-    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    today = format_bj_time()
 
     # 涨跌方向
     if prev_price is None or abs(price - prev_price) < 1e-6:
@@ -124,13 +241,17 @@ def build_card(currency: str, data: Dict[str, str], prev_price: Optional[float])
         f"**现汇买入价**：**{price_str}** 元 / 100{currency}\n"
         f"**发布时间**：{data.get('发布时间', '-')}\n"
         f"**中行折算价**：{data.get('中行折算价', '-')}\n"
-        f"**较上次**：{delta_text}"
+        f"**较上次**：{delta_text}\n\n"
+        f"{build_weekly_summary(weekly_records)}"
     )
     return {
         "msg_type": "interactive",
         "card": {
             "header": {
-                "title": {"tag": "plain_text", "content": f"💱 中行 {currency} 现汇买入价 · {today}"},
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"💱 中行 {currency} 现汇买入价 · {today}",
+                },
                 "template": template,
             },
             "elements": [
@@ -164,19 +285,6 @@ def push_to_feishu(card: dict) -> None:
 
 
 # ============== 主流程 ==============
-def read_last_price() -> Optional[float]:
-    try:
-        with open(_last_price_file, "r", encoding="utf-8") as f:
-            return float(f.read().strip() or "nan") if f.read().strip() else None
-    except (FileNotFoundError, ValueError):
-        return None
-
-
-def write_last_price(price: float) -> None:
-    with open(_last_price_file, "w", encoding="utf-8") as f:
-        f.write(f"{price:.4f}")
-
-
 def main() -> int:
     log.info("开始抓取中行牌价，目标币种: %s", TARGET_CURRENCY)
     html = fetch_boc_html()
@@ -196,7 +304,8 @@ def main() -> int:
         log.info("价格变动 < 阈值，放弃推送")
         return 0
 
-    card = build_card(TARGET_CURRENCY, data, prev)
+    weekly_records = update_weekly_history(TARGET_CURRENCY, cur_price, data)
+    card = build_card(TARGET_CURRENCY, data, prev, weekly_records)
     push_to_feishu(card)
     write_last_price(cur_price)
     return 0
