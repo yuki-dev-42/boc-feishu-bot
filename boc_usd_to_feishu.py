@@ -13,7 +13,7 @@ import hmac
 import base64
 import hashlib
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict
 import requests
 from bs4 import BeautifulSoup
@@ -104,7 +104,9 @@ def gen_sign(secret: str, ts: int) -> str:
 def build_card(currency: str, data: Dict[str, str], prev_price: Optional[float]) -> dict:
     price_str = data["现汇买入价"]
     price = float(price_str)
-    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # 强制用北京时间（UTC+8），避免 GitHub Actions runner 的 UTC 时区干扰
+    BJ_TZ = timezone(timedelta(hours=8))
+    today = datetime.now(BJ_TZ).strftime("%Y-%m-%d %H:%M")
 
     if prev_price is None or abs(price - prev_price) < 1e-6:
         delta_text, template = "— 与上次持平", "blue"
