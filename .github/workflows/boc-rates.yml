@@ -1,23 +1,39 @@
 name: BOC USD Rate to Feishu
+
 on:
   schedule:
-    # 北京时间 12:10 = UTC 04:10，每周一到周五
-    - cron: "*/5 * * * *"
-  workflow_dispatch:   # 允许手动触发测试
+    # 工作日北京时间 13:40 = UTC 05:40
+    - cron: "40 5 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   push:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 lxml
+
       - name: 抓取并推送
         run: python boc_usd_to_feishu.py
         env:
           LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
           LARK_SECRET: ${{ secrets.LARK_SECRET }}
+
+      - name: 保存历史数据
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .last_price .weekly_rates.json || true
+          git diff --cached --quiet || git commit -m "update exchange rate history"
+          git push
