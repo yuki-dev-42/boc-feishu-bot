@@ -1,0 +1,12 @@
+{
+  "week_key": "2026-W24",
+  "currency": "美元",
+  "records": [
+    {
+      "created_at": "2026-06-09 01:34",
+      "weekday": "周二",
+      "source_time": "01:31:18",
+      "price": 677.17
+    }
+  ]
+}
