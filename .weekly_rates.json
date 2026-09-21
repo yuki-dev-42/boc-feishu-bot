@@ -1,36 +1,12 @@
 {
-  "week_key": "2026-W38",
+  "week_key": "2026-W39",
   "currency": "美元",
   "records": [
     {
-      "created_at": "2026-09-14 18:56",
+      "created_at": "2026-09-21 19:02",
       "weekday": "周一",
-      "source_time": "18:53:22",
-      "price": 669.64
-    },
-    {
-      "created_at": "2026-09-15 18:23",
-      "weekday": "周二",
-      "source_time": "18:18:27",
-      "price": 669.98
-    },
-    {
-      "created_at": "2026-09-16 18:15",
-      "weekday": "周三",
-      "source_time": "18:13:33",
-      "price": 669.56
-    },
-    {
-      "created_at": "2026-09-17 18:21",
-      "weekday": "周四",
-      "source_time": "18:18:39",
-      "price": 669.64
-    },
-    {
-      "created_at": "2026-09-18 18:00",
-      "weekday": "周五",
-      "source_time": "17:58:45",
-      "price": 668.68
+      "source_time": "19:00:16",
+      "price": 668.37
     }
   ]
 }
