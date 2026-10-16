@@ -25,6 +25,12 @@
       "weekday": "周四",
       "source_time": "18:12:33",
       "price": 668.06
+    },
+    {
+      "created_at": "2026-10-16 18:04",
+      "weekday": "周五",
+      "source_time": "17:57:39",
+      "price": 667.56
     }
   ]
 }
